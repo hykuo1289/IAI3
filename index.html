@@ -13,24 +13,37 @@
       user-select: none;
       -webkit-user-select: none;
       -webkit-touch-callout: none;
+      touch-action: none;
     }
     html, body {
+      position: fixed;
+      inset: 0;
       margin: 0;
       padding: 0;
       width: 100%;
       height: 100%;
       overflow: hidden;
+      overscroll-behavior: none;
       background: #140a14;
       font-family: 'Noto Sans TC', 'Inter', sans-serif;
       touch-action: none;
+      -webkit-text-size-adjust: 100%;
     }
     #application-canvas {
       position: absolute;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      width: 100% !important;
+      height: 100% !important;
       display: block;
       z-index: 1;
+      touch-action: none;
+    }
+    .custom-scroll {
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+    .custom-scroll * {
+      touch-action: pan-y;
     }
     #overlay-2d {
       position: absolute;
@@ -2148,7 +2161,7 @@
       floatingTexts: [],
       activePad: null,
       keys: { w: false, a: false, s: false, d: false },
-      touchDrag: { active: false, startX: 0, startY: 0, currX: 0, currY: 0, dx: 0, dy: 0 },
+      touchDrag: { active: false, pointerId: null, startX: 0, startY: 0, currX: 0, currY: 0, dx: 0, dy: 0 },
       elapsedTime: 0
     };
 
@@ -2677,7 +2690,44 @@
       if (k === 'd' || e.key === 'ArrowRight') state.keys.d = false;
     });
 
-    // Touch / Pointer drag on the battlefield canvas for mobile movement
+    // Prevent Mobile Browser Accidental Zoom (iOS Safari ignores user-scalable=no by default
+    // when double-tapping buttons or using two hands simultaneously: left-hand drag + right-hand tap)
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((evtName) => {
+      window.addEventListener(evtName, (e) => {
+        e.preventDefault();
+      }, { passive: false });
+    });
+
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length > 1) {
+        // Prevent 2-finger pinch zoom when left hand moves & right hand taps UI
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchmove', (e) => {
+      if (!e.target.closest || !e.target.closest('.custom-scroll')) {
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    let lastTouchEndTime = 0;
+    window.addEventListener('touchend', (e) => {
+      const now = Date.now();
+      if (now - lastTouchEndTime <= 320) {
+        // Prevent rapid double-tap zoom on mobile browsers
+        if (!e.target.closest || !e.target.closest('.custom-scroll')) {
+          e.preventDefault();
+        }
+      }
+      lastTouchEndTime = now;
+    }, { passive: false });
+
+    window.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+    }, { passive: false });
+
+    // Touch / Pointer drag on the battlefield canvas for mobile movement (tracks specific pointerId)
     function isInsideUI(target) {
       return target && target.closest && target.closest('.pointer-auto');
     }
@@ -2685,17 +2735,20 @@
     window.addEventListener('pointerdown', (e) => {
       if (isInsideUI(e.target)) return;
       sound.init();
-      state.touchDrag.active = true;
-      state.touchDrag.startX = e.clientX;
-      state.touchDrag.startY = e.clientY;
-      state.touchDrag.currX = e.clientX;
-      state.touchDrag.currY = e.clientY;
-      state.touchDrag.dx = 0;
-      state.touchDrag.dy = 0;
+      if (!state.touchDrag.active) {
+        state.touchDrag.active = true;
+        state.touchDrag.pointerId = e.pointerId;
+        state.touchDrag.startX = e.clientX;
+        state.touchDrag.startY = e.clientY;
+        state.touchDrag.currX = e.clientX;
+        state.touchDrag.currY = e.clientY;
+        state.touchDrag.dx = 0;
+        state.touchDrag.dy = 0;
+      }
     });
 
     window.addEventListener('pointermove', (e) => {
-      if (!state.touchDrag.active) return;
+      if (!state.touchDrag.active || e.pointerId !== state.touchDrag.pointerId) return;
       state.touchDrag.currX = e.clientX;
       state.touchDrag.currY = e.clientY;
       const vx = e.clientX - state.touchDrag.startX;
@@ -2711,11 +2764,16 @@
       }
     });
 
-    window.addEventListener('pointerup', () => {
+    function endTouchDrag(e) {
+      if (!state.touchDrag.active) return;
+      if (e && e.pointerId !== undefined && e.pointerId !== state.touchDrag.pointerId) return;
       state.touchDrag.active = false;
+      state.touchDrag.pointerId = null;
       state.touchDrag.dx = 0;
       state.touchDrag.dy = 0;
-    });
+    }
+    window.addEventListener('pointerup', endTouchDrag);
+    window.addEventListener('pointercancel', endTouchDrag);
 
     // =========================================================================
     // 9. TRIGGER GAME OVER & CURTAIN CALL (謝幕)
@@ -2749,13 +2807,20 @@
     // 10. MAIN PLAYCANVAS UPDATE LOOP & 2D OVERLAY / MINIMAP RENDERER
     // =========================================================================
     function resizeOverlayCanvas() {
-      if (overlayCanvas.width !== window.innerWidth || overlayCanvas.height !== window.innerHeight) {
-        overlayCanvas.width = window.innerWidth;
-        overlayCanvas.height = window.innerHeight;
+      const vw = document.documentElement.clientWidth || window.innerWidth;
+      const vh = document.documentElement.clientHeight || window.innerHeight;
+      if (overlayCanvas.width !== vw || overlayCanvas.height !== vh) {
+        overlayCanvas.width = vw;
+        overlayCanvas.height = vh;
       }
+      app.resizeCanvas(vw, vh);
+      window.scrollTo(0, 0);
       updateBattlefieldMetrics();
     }
     window.addEventListener('resize', resizeOverlayCanvas);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', resizeOverlayCanvas);
+    }
     resizeOverlayCanvas();
 
     // Project a 3D world point (x, y, z) to 2D canvas coordinates
